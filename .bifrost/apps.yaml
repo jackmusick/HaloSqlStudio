@@ -4,6 +4,7 @@ apps:
     slug: halo-sql-studio
     name: Halo SQL Studio
     path: apps/halo-sql-studio
+    logo: public/logo.svg
     app_model: standalone_v2
     access_level: role_based
     role_names:
