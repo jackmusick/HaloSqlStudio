@@ -1,0 +1,5 @@
+slug: halo-sql-studio
+name: Halo SQL Studio
+version: 0.1.2
+logo: apps/halo-sql-studio/public/logo.svg
+global_repo_access: false

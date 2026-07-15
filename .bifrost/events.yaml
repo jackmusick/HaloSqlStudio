@@ -1,0 +1,15 @@
+events:
+  89a837ad-31c9-4460-a1be-8d0372648f86:
+    id: 89a837ad-31c9-4460-a1be-8d0372648f86
+    name: Halo SQL Studio daily cache refresh
+    source_type: schedule
+    is_active: true
+    cron_expression: "23 3 * * *"
+    timezone: America/New_York
+    schedule_enabled: true
+    overlap_policy: skip
+    subscriptions:
+      - id: 93b3debf-38bf-425f-aeb7-ff76fcf8c5f2
+        target_type: workflow
+        workflow_id: 7b0c2739-e2f7-45d8-9d6c-e68a3338c5ce
+        is_active: true

@@ -1,0 +1,5 @@
+connections:
+  HaloPSA:
+    integration_name: HaloPSA
+    template: {}
+    position: 0
