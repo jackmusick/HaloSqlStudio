@@ -1,0 +1,506 @@
+workflows:
+  7b0c2739-e2f7-45d8-9d6c-e68a3338c5ce:
+    id: 7b0c2739-e2f7-45d8-9d6c-e68a3338c5ce
+    name: halo_sql_refresh_cache
+    path: functions/halo_sql_studio.py
+    function_name: refresh_cache
+    category: Halo SQL Studio
+    access_level: role_based
+    role_names: &id001
+    - Service Managers
+    source: "\"\"\"Halo reporting workflows and reference caches for Halo SQL Studio.\"\
+      \"\"\n\nfrom __future__ import annotations\n\nfrom datetime import datetime,\
+      \ timezone\nfrom typing import Any\n\nfrom bifrost import context, integrations,\
+      \ tables, workflow\nfrom modules import halopsa\nfrom modules.halopsa.reporting\
+      \ import request_json\n\n\nSCHEMA_SQL = (\n    \"SELECT TABLE_NAME as name,\
+      \ COLUMN_NAME as column_name, \"\n    \"DATA_TYPE as data_type, ORDINAL_POSITION\
+      \ as ordinal_position \"\n    \"FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA\
+      \ = 'dbo'\"\n)\nREPORTS_SQL = (\n    \"SELECT APid [Id], fvalue [Group], APTitle\
+      \ [Name], APSQL [SQL] \"\n    \"FROM AnalyzerProfile JOIN LOOKUP ON (APGroupID\
+      \ + 1) = fcode AND fid = 41\"\n)\n\n\ndef _plain(value: Any) -> Any:\n    if\
+      \ isinstance(value, dict):\n        return {str(key): _plain(item) for key,\
+      \ item in value.items()}\n    if isinstance(value, (list, tuple)):\n       \
+      \ return [_plain(item) for item in value]\n    return value\n\n\ndef _items(value:\
+      \ Any, *keys: str) -> list[dict[str, Any]]:\n    data = _plain(value)\n    if\
+      \ isinstance(data, list):\n        return [item for item in data if isinstance(item,\
+      \ dict)]\n    if isinstance(data, dict):\n        for key in keys:\n       \
+      \     candidate = data.get(key)\n            if isinstance(candidate, list):\n\
+      \                return [item for item in candidate if isinstance(item, dict)]\n\
+      \    return []\n\n\nasync def _all_documents(table_name: str) -> list[Any]:\n\
+      \    documents: list[Any] = []\n    offset = 0\n    while True:\n        result\
+      \ = await tables.query(table_name, limit=1000, offset=offset)\n        documents.extend(result.documents)\n\
+      \        if len(result.documents) < 1000:\n            return documents\n  \
+      \      offset += len(result.documents)\n\n\nasync def _replace_table(\n    table_name:\
+      \ str,\n    cache_type: str,\n    documents: list[dict[str, Any]],\n) -> int:\n\
+      \    current = await _all_documents(table_name)\n    for start in range(0, len(documents),\
+      \ 25):\n        await tables.upsert_batch(table_name, documents[start : start\
+      \ + 25])\n    new_ids = {document[\"id\"] for document in documents}\n    stale_ids\
+      \ = [document.id for document in current if document.id not in new_ids]\n  \
+      \  for start in range(0, len(stale_ids), 25):\n        await tables.delete_batch(table_name,\
+      \ stale_ids[start : start + 25])\n\n    refreshed_at = datetime.now(timezone.utc).isoformat()\n\
+      \    await tables.upsert(\n        \"halo_sql_cache_state\",\n        cache_type,\n\
+      \        {\n            \"cache_type\": cache_type,\n            \"refreshed_at\"\
+      : refreshed_at,\n            \"record_count\": len(documents),\n           \
+      \ \"status\": \"ready\",\n        },\n    )\n    return len(documents)\n\n\n\
+      async def _execute_report(sql: str) -> dict[str, Any]:\n    result = _plain(\n\
+      \        await request_json(\n            \"POST\",\n            \"/Report\"\
+      ,\n            [{\"sql\": sql, \"_testonly\": True, \"_loadreportonly\": True}],\n\
+      \        )\n    )\n    return result if isinstance(result, dict) else {\"report\"\
+      : {\"rows\": []}}\n\n\ndef _compact_report(result: dict[str, Any]) -> dict[str,\
+      \ Any]:\n    \"\"\"Keep only the reporting fields consumed by the browser.\"\
+      \"\"\n    report = result.get(\"report\")\n    report = report if isinstance(report,\
+      \ dict) else {}\n    compact_report: dict[str, Any] = {\"rows\": _items(report.get(\"\
+      rows\"), \"rows\")}\n    if report.get(\"load_error\"):\n        compact_report[\"\
+      load_error\"] = report[\"load_error\"]\n    return {\n        \"available_columns\"\
+      : _items(result.get(\"available_columns\"), \"available_columns\"),\n      \
+      \  \"report\": compact_report,\n    }\n\n\nasync def _refresh_environment()\
+      \ -> str:\n    integration = await integrations.get(\"HaloPSA\")\n    if not\
+      \ integration:\n        raise RuntimeError(\"The HaloPSA connection is not configured\
+      \ for this Solution\")\n    halo_base_url = str((integration.config or {}).get(\"\
+      base_url\") or \"\").rstrip(\"/\").removesuffix(\"/api\")\n    if not halo_base_url:\n\
+      \        raise RuntimeError(\"The HaloPSA connection does not define a base\
+      \ URL\")\n    await tables.upsert(\n        \"halo_sql_cache_state\",\n    \
+      \    \"environment\",\n        {\n            \"cache_type\": \"environment\"\
+      ,\n            \"refreshed_at\": datetime.now(timezone.utc).isoformat(),\n \
+      \           \"record_count\": 1,\n            \"status\": \"ready\",\n     \
+      \       \"halo_base_url\": halo_base_url,\n        },\n    )\n    return halo_base_url\n\
+      \n\nasync def _refresh_agents() -> int:\n    cache = _plain(await halopsa.list_client_caches(iscachebuild=True))\n\
+      \    rows = _items(cache, \"agents\") if not isinstance(cache, dict) else _items(cache.get(\"\
+      agents\"), \"agents\")\n    documents = []\n    for row in rows:\n        normalized\
+      \ = _plain(row)\n        normalized[\"email_lower\"] = str(normalized.get(\"\
+      email\") or \"\").strip().lower()\n        documents.append({\"id\": str(normalized[\"\
+      id\"]), \"data\": normalized})\n    return await _replace_table(\"halo_sql_agents\"\
+      , \"agents\", documents)\n\n\nasync def _refresh_schema() -> int:\n    result\
+      \ = await _execute_report(SCHEMA_SQL)\n    rows = _items((result.get(\"report\"\
+      ) or {}).get(\"rows\"), \"rows\")\n    grouped: dict[str, list[dict[str, Any]]]\
+      \ = {}\n    for index, row in enumerate(rows):\n        table_name = str(row.get(\"\
+      name\") or row.get(\"TABLE_NAME\") or \"\").strip()\n        column_name = str(row.get(\"\
+      column_name\") or row.get(\"COLUMN_NAME\") or \"\").strip()\n        if not\
+      \ table_name or not column_name:\n            continue\n        ordinal = int(row.get(\"\
+      ordinal_position\") or row.get(\"ORDINAL_POSITION\") or index)\n        grouped.setdefault(table_name,\
+      \ []).append(\n            {\n                \"name\": column_name,\n     \
+      \           \"data_type\": str(row.get(\"data_type\") or row.get(\"DATA_TYPE\"\
+      ) or \"unknown\"),\n                \"ordinal_position\": ordinal,\n       \
+      \     }\n        )\n    documents = [\n        {\n            \"id\": table_name,\n\
+      \            \"data\": {\n                \"name\": table_name,\n          \
+      \      \"column_count\": len(columns),\n                \"columns\": sorted(columns,\
+      \ key=lambda column: column[\"ordinal_position\"]),\n            },\n      \
+      \  }\n        for table_name, columns in grouped.items()\n    ]\n    return\
+      \ await _replace_table(\"halo_sql_schema_cache\", \"schema\", documents)\n\n\
+      \nasync def _resolve_actor() -> dict[str, Any]:\n    email = str(getattr(context,\
+      \ \"email\", None) or \"\").strip().lower()\n    if not email:\n        raise\
+      \ RuntimeError(\"The calling Bifrost user does not have an email address\")\n\
+      \    result = await tables.query(\"halo_sql_agents\", where={\"email_lower\"\
+      : email}, limit=2)\n    if not result.documents:\n        await _refresh_agents()\n\
+      \        result = await tables.query(\"halo_sql_agents\", where={\"email_lower\"\
+      : email}, limit=2)\n    if not result.documents:\n        raise RuntimeError(f\"\
+      No Halo agent matches Bifrost user {email}\")\n    return result.documents[0].data\n\
+      \n\n@workflow(category=\"Halo SQL Studio\")\nasync def refresh_cache(cache_type:\
+      \ str = \"all\", reason: str = \"daily\") -> dict[str, Any]:\n    \"\"\"Refresh\
+      \ cached Halo agents, reporting schema, or both.\"\"\"\n    if cache_type not\
+      \ in {\"all\", \"agents\", \"schema\"}:\n        raise ValueError(f\"Unsupported\
+      \ cache type: {cache_type}\")\n    counts: dict[str, int] = {}\n    halo_base_url:\
+      \ str | None = None\n    if cache_type in {\"all\", \"agents\"}:\n        counts[\"\
+      agents\"] = await _refresh_agents()\n        halo_base_url = await _refresh_environment()\n\
+      \    if cache_type in {\"all\", \"schema\"}:\n        counts[\"schema\"] = await\
+      \ _refresh_schema()\n    return {\n        \"cache_type\": cache_type,\n   \
+      \     \"reason\": reason,\n        \"counts\": counts,\n        \"halo_base_url\"\
+      : halo_base_url,\n        \"refreshed_at\": datetime.now(timezone.utc).isoformat(),\n\
+      \    }\n\n\n@workflow(category=\"Halo SQL Studio\")\nasync def execute_query(sql:\
+      \ str, agent_id: int | None = None) -> dict[str, Any]:\n    \"\"\"Execute SQL\
+      \ through Halo's reporting API as the calling Bifrost user.\"\"\"\n    if not\
+      \ sql.strip():\n        raise ValueError(\"SQL is required\")\n    processed_sql\
+      \ = sql\n    if \"$agentid\" in sql:\n        if agent_id is None:\n       \
+      \     actor = await _resolve_actor()\n            agent_id = int(actor[\"id\"\
+      ])\n        processed_sql = sql.replace(\"$agentid\", str(agent_id))\n    return\
+      \ _compact_report(await _execute_report(processed_sql))\n\n\n@workflow(category=\"\
+      Halo SQL Studio\")\nasync def list_reports() -> dict[str, Any]:\n    \"\"\"\
+      Load current Halo report definitions.\"\"\"\n    return _compact_report(await\
+      \ _execute_report(REPORTS_SQL))\n\n\n@workflow(category=\"Halo SQL Studio\"\
+      )\nasync def save_report(\n    sql: str,\n    name: str,\n    description: str\
+      \ = \"\",\n    report_id: int | None = None,\n) -> dict[str, Any]:\n    \"\"\
+      \"Create or update a Halo report.\"\"\"\n    payload: dict[str, Any] = {\"sql\"\
+      : sql, \"name\": name, \"description\": description}\n    if report_id is not\
+      \ None:\n        payload[\"id\"] = report_id\n    result = _plain(await request_json(\"\
+      POST\", \"/report\", [payload]))\n    items = _items(result)\n    saved = items[0]\
+      \ if items else result\n    if not isinstance(saved, dict) or saved.get(\"id\"\
+      ) is None:\n        raise RuntimeError(\"Halo returned an invalid report save\
+      \ response\")\n    return {\"id\": str(saved[\"id\"])}\n"
+  e49dc037-82ef-402a-84e5-9c11f74bc733:
+    id: e49dc037-82ef-402a-84e5-9c11f74bc733
+    name: halo_sql_execute_query
+    path: functions/halo_sql_studio.py
+    function_name: execute_query
+    category: Halo SQL Studio
+    access_level: role_based
+    role_names: *id001
+    source: "\"\"\"Halo reporting workflows and reference caches for Halo SQL Studio.\"\
+      \"\"\n\nfrom __future__ import annotations\n\nfrom datetime import datetime,\
+      \ timezone\nfrom typing import Any\n\nfrom bifrost import context, integrations,\
+      \ tables, workflow\nfrom modules import halopsa\nfrom modules.halopsa.reporting\
+      \ import request_json\n\n\nSCHEMA_SQL = (\n    \"SELECT TABLE_NAME as name,\
+      \ COLUMN_NAME as column_name, \"\n    \"DATA_TYPE as data_type, ORDINAL_POSITION\
+      \ as ordinal_position \"\n    \"FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA\
+      \ = 'dbo'\"\n)\nREPORTS_SQL = (\n    \"SELECT APid [Id], fvalue [Group], APTitle\
+      \ [Name], APSQL [SQL] \"\n    \"FROM AnalyzerProfile JOIN LOOKUP ON (APGroupID\
+      \ + 1) = fcode AND fid = 41\"\n)\n\n\ndef _plain(value: Any) -> Any:\n    if\
+      \ isinstance(value, dict):\n        return {str(key): _plain(item) for key,\
+      \ item in value.items()}\n    if isinstance(value, (list, tuple)):\n       \
+      \ return [_plain(item) for item in value]\n    return value\n\n\ndef _items(value:\
+      \ Any, *keys: str) -> list[dict[str, Any]]:\n    data = _plain(value)\n    if\
+      \ isinstance(data, list):\n        return [item for item in data if isinstance(item,\
+      \ dict)]\n    if isinstance(data, dict):\n        for key in keys:\n       \
+      \     candidate = data.get(key)\n            if isinstance(candidate, list):\n\
+      \                return [item for item in candidate if isinstance(item, dict)]\n\
+      \    return []\n\n\nasync def _all_documents(table_name: str) -> list[Any]:\n\
+      \    documents: list[Any] = []\n    offset = 0\n    while True:\n        result\
+      \ = await tables.query(table_name, limit=1000, offset=offset)\n        documents.extend(result.documents)\n\
+      \        if len(result.documents) < 1000:\n            return documents\n  \
+      \      offset += len(result.documents)\n\n\nasync def _replace_table(\n    table_name:\
+      \ str,\n    cache_type: str,\n    documents: list[dict[str, Any]],\n) -> int:\n\
+      \    current = await _all_documents(table_name)\n    for start in range(0, len(documents),\
+      \ 25):\n        await tables.upsert_batch(table_name, documents[start : start\
+      \ + 25])\n    new_ids = {document[\"id\"] for document in documents}\n    stale_ids\
+      \ = [document.id for document in current if document.id not in new_ids]\n  \
+      \  for start in range(0, len(stale_ids), 25):\n        await tables.delete_batch(table_name,\
+      \ stale_ids[start : start + 25])\n\n    refreshed_at = datetime.now(timezone.utc).isoformat()\n\
+      \    await tables.upsert(\n        \"halo_sql_cache_state\",\n        cache_type,\n\
+      \        {\n            \"cache_type\": cache_type,\n            \"refreshed_at\"\
+      : refreshed_at,\n            \"record_count\": len(documents),\n           \
+      \ \"status\": \"ready\",\n        },\n    )\n    return len(documents)\n\n\n\
+      async def _execute_report(sql: str) -> dict[str, Any]:\n    result = _plain(\n\
+      \        await request_json(\n            \"POST\",\n            \"/Report\"\
+      ,\n            [{\"sql\": sql, \"_testonly\": True, \"_loadreportonly\": True}],\n\
+      \        )\n    )\n    return result if isinstance(result, dict) else {\"report\"\
+      : {\"rows\": []}}\n\n\ndef _compact_report(result: dict[str, Any]) -> dict[str,\
+      \ Any]:\n    \"\"\"Keep only the reporting fields consumed by the browser.\"\
+      \"\"\n    report = result.get(\"report\")\n    report = report if isinstance(report,\
+      \ dict) else {}\n    compact_report: dict[str, Any] = {\"rows\": _items(report.get(\"\
+      rows\"), \"rows\")}\n    if report.get(\"load_error\"):\n        compact_report[\"\
+      load_error\"] = report[\"load_error\"]\n    return {\n        \"available_columns\"\
+      : _items(result.get(\"available_columns\"), \"available_columns\"),\n      \
+      \  \"report\": compact_report,\n    }\n\n\nasync def _refresh_environment()\
+      \ -> str:\n    integration = await integrations.get(\"HaloPSA\")\n    if not\
+      \ integration:\n        raise RuntimeError(\"The HaloPSA connection is not configured\
+      \ for this Solution\")\n    halo_base_url = str((integration.config or {}).get(\"\
+      base_url\") or \"\").rstrip(\"/\").removesuffix(\"/api\")\n    if not halo_base_url:\n\
+      \        raise RuntimeError(\"The HaloPSA connection does not define a base\
+      \ URL\")\n    await tables.upsert(\n        \"halo_sql_cache_state\",\n    \
+      \    \"environment\",\n        {\n            \"cache_type\": \"environment\"\
+      ,\n            \"refreshed_at\": datetime.now(timezone.utc).isoformat(),\n \
+      \           \"record_count\": 1,\n            \"status\": \"ready\",\n     \
+      \       \"halo_base_url\": halo_base_url,\n        },\n    )\n    return halo_base_url\n\
+      \n\nasync def _refresh_agents() -> int:\n    cache = _plain(await halopsa.list_client_caches(iscachebuild=True))\n\
+      \    rows = _items(cache, \"agents\") if not isinstance(cache, dict) else _items(cache.get(\"\
+      agents\"), \"agents\")\n    documents = []\n    for row in rows:\n        normalized\
+      \ = _plain(row)\n        normalized[\"email_lower\"] = str(normalized.get(\"\
+      email\") or \"\").strip().lower()\n        documents.append({\"id\": str(normalized[\"\
+      id\"]), \"data\": normalized})\n    return await _replace_table(\"halo_sql_agents\"\
+      , \"agents\", documents)\n\n\nasync def _refresh_schema() -> int:\n    result\
+      \ = await _execute_report(SCHEMA_SQL)\n    rows = _items((result.get(\"report\"\
+      ) or {}).get(\"rows\"), \"rows\")\n    grouped: dict[str, list[dict[str, Any]]]\
+      \ = {}\n    for index, row in enumerate(rows):\n        table_name = str(row.get(\"\
+      name\") or row.get(\"TABLE_NAME\") or \"\").strip()\n        column_name = str(row.get(\"\
+      column_name\") or row.get(\"COLUMN_NAME\") or \"\").strip()\n        if not\
+      \ table_name or not column_name:\n            continue\n        ordinal = int(row.get(\"\
+      ordinal_position\") or row.get(\"ORDINAL_POSITION\") or index)\n        grouped.setdefault(table_name,\
+      \ []).append(\n            {\n                \"name\": column_name,\n     \
+      \           \"data_type\": str(row.get(\"data_type\") or row.get(\"DATA_TYPE\"\
+      ) or \"unknown\"),\n                \"ordinal_position\": ordinal,\n       \
+      \     }\n        )\n    documents = [\n        {\n            \"id\": table_name,\n\
+      \            \"data\": {\n                \"name\": table_name,\n          \
+      \      \"column_count\": len(columns),\n                \"columns\": sorted(columns,\
+      \ key=lambda column: column[\"ordinal_position\"]),\n            },\n      \
+      \  }\n        for table_name, columns in grouped.items()\n    ]\n    return\
+      \ await _replace_table(\"halo_sql_schema_cache\", \"schema\", documents)\n\n\
+      \nasync def _resolve_actor() -> dict[str, Any]:\n    email = str(getattr(context,\
+      \ \"email\", None) or \"\").strip().lower()\n    if not email:\n        raise\
+      \ RuntimeError(\"The calling Bifrost user does not have an email address\")\n\
+      \    result = await tables.query(\"halo_sql_agents\", where={\"email_lower\"\
+      : email}, limit=2)\n    if not result.documents:\n        await _refresh_agents()\n\
+      \        result = await tables.query(\"halo_sql_agents\", where={\"email_lower\"\
+      : email}, limit=2)\n    if not result.documents:\n        raise RuntimeError(f\"\
+      No Halo agent matches Bifrost user {email}\")\n    return result.documents[0].data\n\
+      \n\n@workflow(category=\"Halo SQL Studio\")\nasync def refresh_cache(cache_type:\
+      \ str = \"all\", reason: str = \"daily\") -> dict[str, Any]:\n    \"\"\"Refresh\
+      \ cached Halo agents, reporting schema, or both.\"\"\"\n    if cache_type not\
+      \ in {\"all\", \"agents\", \"schema\"}:\n        raise ValueError(f\"Unsupported\
+      \ cache type: {cache_type}\")\n    counts: dict[str, int] = {}\n    halo_base_url:\
+      \ str | None = None\n    if cache_type in {\"all\", \"agents\"}:\n        counts[\"\
+      agents\"] = await _refresh_agents()\n        halo_base_url = await _refresh_environment()\n\
+      \    if cache_type in {\"all\", \"schema\"}:\n        counts[\"schema\"] = await\
+      \ _refresh_schema()\n    return {\n        \"cache_type\": cache_type,\n   \
+      \     \"reason\": reason,\n        \"counts\": counts,\n        \"halo_base_url\"\
+      : halo_base_url,\n        \"refreshed_at\": datetime.now(timezone.utc).isoformat(),\n\
+      \    }\n\n\n@workflow(category=\"Halo SQL Studio\")\nasync def execute_query(sql:\
+      \ str, agent_id: int | None = None) -> dict[str, Any]:\n    \"\"\"Execute SQL\
+      \ through Halo's reporting API as the calling Bifrost user.\"\"\"\n    if not\
+      \ sql.strip():\n        raise ValueError(\"SQL is required\")\n    processed_sql\
+      \ = sql\n    if \"$agentid\" in sql:\n        if agent_id is None:\n       \
+      \     actor = await _resolve_actor()\n            agent_id = int(actor[\"id\"\
+      ])\n        processed_sql = sql.replace(\"$agentid\", str(agent_id))\n    return\
+      \ _compact_report(await _execute_report(processed_sql))\n\n\n@workflow(category=\"\
+      Halo SQL Studio\")\nasync def list_reports() -> dict[str, Any]:\n    \"\"\"\
+      Load current Halo report definitions.\"\"\"\n    return _compact_report(await\
+      \ _execute_report(REPORTS_SQL))\n\n\n@workflow(category=\"Halo SQL Studio\"\
+      )\nasync def save_report(\n    sql: str,\n    name: str,\n    description: str\
+      \ = \"\",\n    report_id: int | None = None,\n) -> dict[str, Any]:\n    \"\"\
+      \"Create or update a Halo report.\"\"\"\n    payload: dict[str, Any] = {\"sql\"\
+      : sql, \"name\": name, \"description\": description}\n    if report_id is not\
+      \ None:\n        payload[\"id\"] = report_id\n    result = _plain(await request_json(\"\
+      POST\", \"/report\", [payload]))\n    items = _items(result)\n    saved = items[0]\
+      \ if items else result\n    if not isinstance(saved, dict) or saved.get(\"id\"\
+      ) is None:\n        raise RuntimeError(\"Halo returned an invalid report save\
+      \ response\")\n    return {\"id\": str(saved[\"id\"])}\n"
+  d986a10a-581d-4214-b688-349e02b1cc9f:
+    id: d986a10a-581d-4214-b688-349e02b1cc9f
+    name: halo_sql_list_reports
+    path: functions/halo_sql_studio.py
+    function_name: list_reports
+    category: Halo SQL Studio
+    access_level: role_based
+    role_names: *id001
+    source: "\"\"\"Halo reporting workflows and reference caches for Halo SQL Studio.\"\
+      \"\"\n\nfrom __future__ import annotations\n\nfrom datetime import datetime,\
+      \ timezone\nfrom typing import Any\n\nfrom bifrost import context, integrations,\
+      \ tables, workflow\nfrom modules import halopsa\nfrom modules.halopsa.reporting\
+      \ import request_json\n\n\nSCHEMA_SQL = (\n    \"SELECT TABLE_NAME as name,\
+      \ COLUMN_NAME as column_name, \"\n    \"DATA_TYPE as data_type, ORDINAL_POSITION\
+      \ as ordinal_position \"\n    \"FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA\
+      \ = 'dbo'\"\n)\nREPORTS_SQL = (\n    \"SELECT APid [Id], fvalue [Group], APTitle\
+      \ [Name], APSQL [SQL] \"\n    \"FROM AnalyzerProfile JOIN LOOKUP ON (APGroupID\
+      \ + 1) = fcode AND fid = 41\"\n)\n\n\ndef _plain(value: Any) -> Any:\n    if\
+      \ isinstance(value, dict):\n        return {str(key): _plain(item) for key,\
+      \ item in value.items()}\n    if isinstance(value, (list, tuple)):\n       \
+      \ return [_plain(item) for item in value]\n    return value\n\n\ndef _items(value:\
+      \ Any, *keys: str) -> list[dict[str, Any]]:\n    data = _plain(value)\n    if\
+      \ isinstance(data, list):\n        return [item for item in data if isinstance(item,\
+      \ dict)]\n    if isinstance(data, dict):\n        for key in keys:\n       \
+      \     candidate = data.get(key)\n            if isinstance(candidate, list):\n\
+      \                return [item for item in candidate if isinstance(item, dict)]\n\
+      \    return []\n\n\nasync def _all_documents(table_name: str) -> list[Any]:\n\
+      \    documents: list[Any] = []\n    offset = 0\n    while True:\n        result\
+      \ = await tables.query(table_name, limit=1000, offset=offset)\n        documents.extend(result.documents)\n\
+      \        if len(result.documents) < 1000:\n            return documents\n  \
+      \      offset += len(result.documents)\n\n\nasync def _replace_table(\n    table_name:\
+      \ str,\n    cache_type: str,\n    documents: list[dict[str, Any]],\n) -> int:\n\
+      \    current = await _all_documents(table_name)\n    for start in range(0, len(documents),\
+      \ 25):\n        await tables.upsert_batch(table_name, documents[start : start\
+      \ + 25])\n    new_ids = {document[\"id\"] for document in documents}\n    stale_ids\
+      \ = [document.id for document in current if document.id not in new_ids]\n  \
+      \  for start in range(0, len(stale_ids), 25):\n        await tables.delete_batch(table_name,\
+      \ stale_ids[start : start + 25])\n\n    refreshed_at = datetime.now(timezone.utc).isoformat()\n\
+      \    await tables.upsert(\n        \"halo_sql_cache_state\",\n        cache_type,\n\
+      \        {\n            \"cache_type\": cache_type,\n            \"refreshed_at\"\
+      : refreshed_at,\n            \"record_count\": len(documents),\n           \
+      \ \"status\": \"ready\",\n        },\n    )\n    return len(documents)\n\n\n\
+      async def _execute_report(sql: str) -> dict[str, Any]:\n    result = _plain(\n\
+      \        await request_json(\n            \"POST\",\n            \"/Report\"\
+      ,\n            [{\"sql\": sql, \"_testonly\": True, \"_loadreportonly\": True}],\n\
+      \        )\n    )\n    return result if isinstance(result, dict) else {\"report\"\
+      : {\"rows\": []}}\n\n\ndef _compact_report(result: dict[str, Any]) -> dict[str,\
+      \ Any]:\n    \"\"\"Keep only the reporting fields consumed by the browser.\"\
+      \"\"\n    report = result.get(\"report\")\n    report = report if isinstance(report,\
+      \ dict) else {}\n    compact_report: dict[str, Any] = {\"rows\": _items(report.get(\"\
+      rows\"), \"rows\")}\n    if report.get(\"load_error\"):\n        compact_report[\"\
+      load_error\"] = report[\"load_error\"]\n    return {\n        \"available_columns\"\
+      : _items(result.get(\"available_columns\"), \"available_columns\"),\n      \
+      \  \"report\": compact_report,\n    }\n\n\nasync def _refresh_environment()\
+      \ -> str:\n    integration = await integrations.get(\"HaloPSA\")\n    if not\
+      \ integration:\n        raise RuntimeError(\"The HaloPSA connection is not configured\
+      \ for this Solution\")\n    halo_base_url = str((integration.config or {}).get(\"\
+      base_url\") or \"\").rstrip(\"/\").removesuffix(\"/api\")\n    if not halo_base_url:\n\
+      \        raise RuntimeError(\"The HaloPSA connection does not define a base\
+      \ URL\")\n    await tables.upsert(\n        \"halo_sql_cache_state\",\n    \
+      \    \"environment\",\n        {\n            \"cache_type\": \"environment\"\
+      ,\n            \"refreshed_at\": datetime.now(timezone.utc).isoformat(),\n \
+      \           \"record_count\": 1,\n            \"status\": \"ready\",\n     \
+      \       \"halo_base_url\": halo_base_url,\n        },\n    )\n    return halo_base_url\n\
+      \n\nasync def _refresh_agents() -> int:\n    cache = _plain(await halopsa.list_client_caches(iscachebuild=True))\n\
+      \    rows = _items(cache, \"agents\") if not isinstance(cache, dict) else _items(cache.get(\"\
+      agents\"), \"agents\")\n    documents = []\n    for row in rows:\n        normalized\
+      \ = _plain(row)\n        normalized[\"email_lower\"] = str(normalized.get(\"\
+      email\") or \"\").strip().lower()\n        documents.append({\"id\": str(normalized[\"\
+      id\"]), \"data\": normalized})\n    return await _replace_table(\"halo_sql_agents\"\
+      , \"agents\", documents)\n\n\nasync def _refresh_schema() -> int:\n    result\
+      \ = await _execute_report(SCHEMA_SQL)\n    rows = _items((result.get(\"report\"\
+      ) or {}).get(\"rows\"), \"rows\")\n    grouped: dict[str, list[dict[str, Any]]]\
+      \ = {}\n    for index, row in enumerate(rows):\n        table_name = str(row.get(\"\
+      name\") or row.get(\"TABLE_NAME\") or \"\").strip()\n        column_name = str(row.get(\"\
+      column_name\") or row.get(\"COLUMN_NAME\") or \"\").strip()\n        if not\
+      \ table_name or not column_name:\n            continue\n        ordinal = int(row.get(\"\
+      ordinal_position\") or row.get(\"ORDINAL_POSITION\") or index)\n        grouped.setdefault(table_name,\
+      \ []).append(\n            {\n                \"name\": column_name,\n     \
+      \           \"data_type\": str(row.get(\"data_type\") or row.get(\"DATA_TYPE\"\
+      ) or \"unknown\"),\n                \"ordinal_position\": ordinal,\n       \
+      \     }\n        )\n    documents = [\n        {\n            \"id\": table_name,\n\
+      \            \"data\": {\n                \"name\": table_name,\n          \
+      \      \"column_count\": len(columns),\n                \"columns\": sorted(columns,\
+      \ key=lambda column: column[\"ordinal_position\"]),\n            },\n      \
+      \  }\n        for table_name, columns in grouped.items()\n    ]\n    return\
+      \ await _replace_table(\"halo_sql_schema_cache\", \"schema\", documents)\n\n\
+      \nasync def _resolve_actor() -> dict[str, Any]:\n    email = str(getattr(context,\
+      \ \"email\", None) or \"\").strip().lower()\n    if not email:\n        raise\
+      \ RuntimeError(\"The calling Bifrost user does not have an email address\")\n\
+      \    result = await tables.query(\"halo_sql_agents\", where={\"email_lower\"\
+      : email}, limit=2)\n    if not result.documents:\n        await _refresh_agents()\n\
+      \        result = await tables.query(\"halo_sql_agents\", where={\"email_lower\"\
+      : email}, limit=2)\n    if not result.documents:\n        raise RuntimeError(f\"\
+      No Halo agent matches Bifrost user {email}\")\n    return result.documents[0].data\n\
+      \n\n@workflow(category=\"Halo SQL Studio\")\nasync def refresh_cache(cache_type:\
+      \ str = \"all\", reason: str = \"daily\") -> dict[str, Any]:\n    \"\"\"Refresh\
+      \ cached Halo agents, reporting schema, or both.\"\"\"\n    if cache_type not\
+      \ in {\"all\", \"agents\", \"schema\"}:\n        raise ValueError(f\"Unsupported\
+      \ cache type: {cache_type}\")\n    counts: dict[str, int] = {}\n    halo_base_url:\
+      \ str | None = None\n    if cache_type in {\"all\", \"agents\"}:\n        counts[\"\
+      agents\"] = await _refresh_agents()\n        halo_base_url = await _refresh_environment()\n\
+      \    if cache_type in {\"all\", \"schema\"}:\n        counts[\"schema\"] = await\
+      \ _refresh_schema()\n    return {\n        \"cache_type\": cache_type,\n   \
+      \     \"reason\": reason,\n        \"counts\": counts,\n        \"halo_base_url\"\
+      : halo_base_url,\n        \"refreshed_at\": datetime.now(timezone.utc).isoformat(),\n\
+      \    }\n\n\n@workflow(category=\"Halo SQL Studio\")\nasync def execute_query(sql:\
+      \ str, agent_id: int | None = None) -> dict[str, Any]:\n    \"\"\"Execute SQL\
+      \ through Halo's reporting API as the calling Bifrost user.\"\"\"\n    if not\
+      \ sql.strip():\n        raise ValueError(\"SQL is required\")\n    processed_sql\
+      \ = sql\n    if \"$agentid\" in sql:\n        if agent_id is None:\n       \
+      \     actor = await _resolve_actor()\n            agent_id = int(actor[\"id\"\
+      ])\n        processed_sql = sql.replace(\"$agentid\", str(agent_id))\n    return\
+      \ _compact_report(await _execute_report(processed_sql))\n\n\n@workflow(category=\"\
+      Halo SQL Studio\")\nasync def list_reports() -> dict[str, Any]:\n    \"\"\"\
+      Load current Halo report definitions.\"\"\"\n    return _compact_report(await\
+      \ _execute_report(REPORTS_SQL))\n\n\n@workflow(category=\"Halo SQL Studio\"\
+      )\nasync def save_report(\n    sql: str,\n    name: str,\n    description: str\
+      \ = \"\",\n    report_id: int | None = None,\n) -> dict[str, Any]:\n    \"\"\
+      \"Create or update a Halo report.\"\"\"\n    payload: dict[str, Any] = {\"sql\"\
+      : sql, \"name\": name, \"description\": description}\n    if report_id is not\
+      \ None:\n        payload[\"id\"] = report_id\n    result = _plain(await request_json(\"\
+      POST\", \"/report\", [payload]))\n    items = _items(result)\n    saved = items[0]\
+      \ if items else result\n    if not isinstance(saved, dict) or saved.get(\"id\"\
+      ) is None:\n        raise RuntimeError(\"Halo returned an invalid report save\
+      \ response\")\n    return {\"id\": str(saved[\"id\"])}\n"
+  3e8cf647-88f0-4164-baa6-cd369fb9cfe7:
+    id: 3e8cf647-88f0-4164-baa6-cd369fb9cfe7
+    name: halo_sql_save_report
+    path: functions/halo_sql_studio.py
+    function_name: save_report
+    category: Halo SQL Studio
+    access_level: role_based
+    role_names: *id001
+    source: "\"\"\"Halo reporting workflows and reference caches for Halo SQL Studio.\"\
+      \"\"\n\nfrom __future__ import annotations\n\nfrom datetime import datetime,\
+      \ timezone\nfrom typing import Any\n\nfrom bifrost import context, integrations,\
+      \ tables, workflow\nfrom modules import halopsa\nfrom modules.halopsa.reporting\
+      \ import request_json\n\n\nSCHEMA_SQL = (\n    \"SELECT TABLE_NAME as name,\
+      \ COLUMN_NAME as column_name, \"\n    \"DATA_TYPE as data_type, ORDINAL_POSITION\
+      \ as ordinal_position \"\n    \"FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA\
+      \ = 'dbo'\"\n)\nREPORTS_SQL = (\n    \"SELECT APid [Id], fvalue [Group], APTitle\
+      \ [Name], APSQL [SQL] \"\n    \"FROM AnalyzerProfile JOIN LOOKUP ON (APGroupID\
+      \ + 1) = fcode AND fid = 41\"\n)\n\n\ndef _plain(value: Any) -> Any:\n    if\
+      \ isinstance(value, dict):\n        return {str(key): _plain(item) for key,\
+      \ item in value.items()}\n    if isinstance(value, (list, tuple)):\n       \
+      \ return [_plain(item) for item in value]\n    return value\n\n\ndef _items(value:\
+      \ Any, *keys: str) -> list[dict[str, Any]]:\n    data = _plain(value)\n    if\
+      \ isinstance(data, list):\n        return [item for item in data if isinstance(item,\
+      \ dict)]\n    if isinstance(data, dict):\n        for key in keys:\n       \
+      \     candidate = data.get(key)\n            if isinstance(candidate, list):\n\
+      \                return [item for item in candidate if isinstance(item, dict)]\n\
+      \    return []\n\n\nasync def _all_documents(table_name: str) -> list[Any]:\n\
+      \    documents: list[Any] = []\n    offset = 0\n    while True:\n        result\
+      \ = await tables.query(table_name, limit=1000, offset=offset)\n        documents.extend(result.documents)\n\
+      \        if len(result.documents) < 1000:\n            return documents\n  \
+      \      offset += len(result.documents)\n\n\nasync def _replace_table(\n    table_name:\
+      \ str,\n    cache_type: str,\n    documents: list[dict[str, Any]],\n) -> int:\n\
+      \    current = await _all_documents(table_name)\n    for start in range(0, len(documents),\
+      \ 25):\n        await tables.upsert_batch(table_name, documents[start : start\
+      \ + 25])\n    new_ids = {document[\"id\"] for document in documents}\n    stale_ids\
+      \ = [document.id for document in current if document.id not in new_ids]\n  \
+      \  for start in range(0, len(stale_ids), 25):\n        await tables.delete_batch(table_name,\
+      \ stale_ids[start : start + 25])\n\n    refreshed_at = datetime.now(timezone.utc).isoformat()\n\
+      \    await tables.upsert(\n        \"halo_sql_cache_state\",\n        cache_type,\n\
+      \        {\n            \"cache_type\": cache_type,\n            \"refreshed_at\"\
+      : refreshed_at,\n            \"record_count\": len(documents),\n           \
+      \ \"status\": \"ready\",\n        },\n    )\n    return len(documents)\n\n\n\
+      async def _execute_report(sql: str) -> dict[str, Any]:\n    result = _plain(\n\
+      \        await request_json(\n            \"POST\",\n            \"/Report\"\
+      ,\n            [{\"sql\": sql, \"_testonly\": True, \"_loadreportonly\": True}],\n\
+      \        )\n    )\n    return result if isinstance(result, dict) else {\"report\"\
+      : {\"rows\": []}}\n\n\ndef _compact_report(result: dict[str, Any]) -> dict[str,\
+      \ Any]:\n    \"\"\"Keep only the reporting fields consumed by the browser.\"\
+      \"\"\n    report = result.get(\"report\")\n    report = report if isinstance(report,\
+      \ dict) else {}\n    compact_report: dict[str, Any] = {\"rows\": _items(report.get(\"\
+      rows\"), \"rows\")}\n    if report.get(\"load_error\"):\n        compact_report[\"\
+      load_error\"] = report[\"load_error\"]\n    return {\n        \"available_columns\"\
+      : _items(result.get(\"available_columns\"), \"available_columns\"),\n      \
+      \  \"report\": compact_report,\n    }\n\n\nasync def _refresh_environment()\
+      \ -> str:\n    integration = await integrations.get(\"HaloPSA\")\n    if not\
+      \ integration:\n        raise RuntimeError(\"The HaloPSA connection is not configured\
+      \ for this Solution\")\n    halo_base_url = str((integration.config or {}).get(\"\
+      base_url\") or \"\").rstrip(\"/\").removesuffix(\"/api\")\n    if not halo_base_url:\n\
+      \        raise RuntimeError(\"The HaloPSA connection does not define a base\
+      \ URL\")\n    await tables.upsert(\n        \"halo_sql_cache_state\",\n    \
+      \    \"environment\",\n        {\n            \"cache_type\": \"environment\"\
+      ,\n            \"refreshed_at\": datetime.now(timezone.utc).isoformat(),\n \
+      \           \"record_count\": 1,\n            \"status\": \"ready\",\n     \
+      \       \"halo_base_url\": halo_base_url,\n        },\n    )\n    return halo_base_url\n\
+      \n\nasync def _refresh_agents() -> int:\n    cache = _plain(await halopsa.list_client_caches(iscachebuild=True))\n\
+      \    rows = _items(cache, \"agents\") if not isinstance(cache, dict) else _items(cache.get(\"\
+      agents\"), \"agents\")\n    documents = []\n    for row in rows:\n        normalized\
+      \ = _plain(row)\n        normalized[\"email_lower\"] = str(normalized.get(\"\
+      email\") or \"\").strip().lower()\n        documents.append({\"id\": str(normalized[\"\
+      id\"]), \"data\": normalized})\n    return await _replace_table(\"halo_sql_agents\"\
+      , \"agents\", documents)\n\n\nasync def _refresh_schema() -> int:\n    result\
+      \ = await _execute_report(SCHEMA_SQL)\n    rows = _items((result.get(\"report\"\
+      ) or {}).get(\"rows\"), \"rows\")\n    grouped: dict[str, list[dict[str, Any]]]\
+      \ = {}\n    for index, row in enumerate(rows):\n        table_name = str(row.get(\"\
+      name\") or row.get(\"TABLE_NAME\") or \"\").strip()\n        column_name = str(row.get(\"\
+      column_name\") or row.get(\"COLUMN_NAME\") or \"\").strip()\n        if not\
+      \ table_name or not column_name:\n            continue\n        ordinal = int(row.get(\"\
+      ordinal_position\") or row.get(\"ORDINAL_POSITION\") or index)\n        grouped.setdefault(table_name,\
+      \ []).append(\n            {\n                \"name\": column_name,\n     \
+      \           \"data_type\": str(row.get(\"data_type\") or row.get(\"DATA_TYPE\"\
+      ) or \"unknown\"),\n                \"ordinal_position\": ordinal,\n       \
+      \     }\n        )\n    documents = [\n        {\n            \"id\": table_name,\n\
+      \            \"data\": {\n                \"name\": table_name,\n          \
+      \      \"column_count\": len(columns),\n                \"columns\": sorted(columns,\
+      \ key=lambda column: column[\"ordinal_position\"]),\n            },\n      \
+      \  }\n        for table_name, columns in grouped.items()\n    ]\n    return\
+      \ await _replace_table(\"halo_sql_schema_cache\", \"schema\", documents)\n\n\
+      \nasync def _resolve_actor() -> dict[str, Any]:\n    email = str(getattr(context,\
+      \ \"email\", None) or \"\").strip().lower()\n    if not email:\n        raise\
+      \ RuntimeError(\"The calling Bifrost user does not have an email address\")\n\
+      \    result = await tables.query(\"halo_sql_agents\", where={\"email_lower\"\
+      : email}, limit=2)\n    if not result.documents:\n        await _refresh_agents()\n\
+      \        result = await tables.query(\"halo_sql_agents\", where={\"email_lower\"\
+      : email}, limit=2)\n    if not result.documents:\n        raise RuntimeError(f\"\
+      No Halo agent matches Bifrost user {email}\")\n    return result.documents[0].data\n\
+      \n\n@workflow(category=\"Halo SQL Studio\")\nasync def refresh_cache(cache_type:\
+      \ str = \"all\", reason: str = \"daily\") -> dict[str, Any]:\n    \"\"\"Refresh\
+      \ cached Halo agents, reporting schema, or both.\"\"\"\n    if cache_type not\
+      \ in {\"all\", \"agents\", \"schema\"}:\n        raise ValueError(f\"Unsupported\
+      \ cache type: {cache_type}\")\n    counts: dict[str, int] = {}\n    halo_base_url:\
+      \ str | None = None\n    if cache_type in {\"all\", \"agents\"}:\n        counts[\"\
+      agents\"] = await _refresh_agents()\n        halo_base_url = await _refresh_environment()\n\
+      \    if cache_type in {\"all\", \"schema\"}:\n        counts[\"schema\"] = await\
+      \ _refresh_schema()\n    return {\n        \"cache_type\": cache_type,\n   \
+      \     \"reason\": reason,\n        \"counts\": counts,\n        \"halo_base_url\"\
+      : halo_base_url,\n        \"refreshed_at\": datetime.now(timezone.utc).isoformat(),\n\
+      \    }\n\n\n@workflow(category=\"Halo SQL Studio\")\nasync def execute_query(sql:\
+      \ str, agent_id: int | None = None) -> dict[str, Any]:\n    \"\"\"Execute SQL\
+      \ through Halo's reporting API as the calling Bifrost user.\"\"\"\n    if not\
+      \ sql.strip():\n        raise ValueError(\"SQL is required\")\n    processed_sql\
+      \ = sql\n    if \"$agentid\" in sql:\n        if agent_id is None:\n       \
+      \     actor = await _resolve_actor()\n            agent_id = int(actor[\"id\"\
+      ])\n        processed_sql = sql.replace(\"$agentid\", str(agent_id))\n    return\
+      \ _compact_report(await _execute_report(processed_sql))\n\n\n@workflow(category=\"\
+      Halo SQL Studio\")\nasync def list_reports() -> dict[str, Any]:\n    \"\"\"\
+      Load current Halo report definitions.\"\"\"\n    return _compact_report(await\
+      \ _execute_report(REPORTS_SQL))\n\n\n@workflow(category=\"Halo SQL Studio\"\
+      )\nasync def save_report(\n    sql: str,\n    name: str,\n    description: str\
+      \ = \"\",\n    report_id: int | None = None,\n) -> dict[str, Any]:\n    \"\"\
+      \"Create or update a Halo report.\"\"\"\n    payload: dict[str, Any] = {\"sql\"\
+      : sql, \"name\": name, \"description\": description}\n    if report_id is not\
+      \ None:\n        payload[\"id\"] = report_id\n    result = _plain(await request_json(\"\
+      POST\", \"/report\", [payload]))\n    items = _items(result)\n    saved = items[0]\
+      \ if items else result\n    if not isinstance(saved, dict) or saved.get(\"id\"\
+      ) is None:\n        raise RuntimeError(\"Halo returned an invalid report save\
+      \ response\")\n    return {\"id\": str(saved[\"id\"])}\n"

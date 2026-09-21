@@ -1,0 +1,16 @@
+/* AG Grid Custom Styling */
+.ag-theme-quartz {
+    --ag-background-color: hsl(var(--background));
+    --ag-foreground-color: hsl(var(--foreground));
+    --ag-header-background-color: hsl(var(--card));
+    --ag-header-foreground-color: hsl(var(--foreground));
+    --ag-border-color: hsl(var(--border));
+    --ag-row-hover-color: hsl(var(--accent) / 0.1);
+    --ag-selected-row-background-color: hsl(var(--primary) / 0.2);
+}
+
+/* Custom header styling */
+.ag-header-cell-custom {
+    font-weight: 600 !important;
+    font-size: 12px !important;
+}

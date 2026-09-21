@@ -1,0 +1,13 @@
+apps:
+  66ce2afb-d6e9-419b-bfcd-18edc5409ec5:
+    id: 66ce2afb-d6e9-419b-bfcd-18edc5409ec5
+    slug: halo-sql-studio
+    name: Halo SQL Studio
+    description: null
+    app_model: standalone_v2
+    dependencies: {}
+    access_level: role_based
+    roles: []
+    role_names:
+    - Service Managers
+    path: apps/halo-sql-studio

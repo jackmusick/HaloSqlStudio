@@ -1,0 +1,75 @@
+tables:
+  8f879fd7-7086-40f8-b3b4-eb69616e040e:
+    id: 8f879fd7-7086-40f8-b3b4-eb69616e040e
+    name: halo_sql_agents
+    description: Cached Halo agents used to map a Bifrost caller by email.
+    schema:
+      columns:
+      - name: id
+        type: int
+      - name: name
+        type: string
+      - name: email
+        type: string
+      - name: email_lower
+        type: string
+      - name: team
+        type: string
+      - name: isdisabled
+        type: bool
+    policies:
+    - &id001
+      name: admin_bypass
+      description: Platform admins may maintain Halo SQL Studio cache rows.
+      actions:
+      - read
+      - create
+      - update
+      - delete
+      when:
+        user: is_platform_admin
+    - &id002
+      name: halo_sql_service_managers
+      description: Service Managers may read and refresh Halo SQL Studio caches.
+      actions:
+      - read
+      - create
+      - update
+      - delete
+      when:
+        call: has_role
+        args:
+        - Service Managers
+  4ff19c9f-582f-43b5-9a70-03495de3bdd7:
+    id: 4ff19c9f-582f-43b5-9a70-03495de3bdd7
+    name: halo_sql_schema_cache
+    description: Cached Halo reporting database tables with nested columns for explorer
+      and completion.
+    schema:
+      columns:
+      - name: name
+        type: string
+      - name: column_count
+        type: int
+    policies:
+    - *id001
+    - *id002
+  47b559db-9ed4-4712-962e-a3316ab58da8:
+    id: 47b559db-9ed4-4712-962e-a3316ab58da8
+    name: halo_sql_cache_state
+    description: Last refresh timestamp and health for Halo SQL Studio caches.
+    schema:
+      columns:
+      - name: cache_type
+        type: string
+      - name: refreshed_at
+        type: datetime
+      - name: record_count
+        type: int
+      - name: status
+        type: string
+      - name: halo_base_url
+        type: string
+    policies:
+    - *id001
+    - *id002
