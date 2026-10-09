@@ -1,0 +1,34 @@
+workflows:
+  7b0c2739-e2f7-45d8-9d6c-e68a3338c5ce:
+    id: 7b0c2739-e2f7-45d8-9d6c-e68a3338c5ce
+    name: halo_sql_refresh_cache
+    path: functions/halo_sql_studio.py
+    function_name: refresh_cache
+    category: Halo SQL Studio
+    access_level: role_based
+    role_names: &sql_roles
+      - Service Managers
+  e49dc037-82ef-402a-84e5-9c11f74bc733:
+    id: e49dc037-82ef-402a-84e5-9c11f74bc733
+    name: halo_sql_execute_query
+    path: functions/halo_sql_studio.py
+    function_name: execute_query
+    category: Halo SQL Studio
+    access_level: role_based
+    role_names: *sql_roles
+  d986a10a-581d-4214-b688-349e02b1cc9f:
+    id: d986a10a-581d-4214-b688-349e02b1cc9f
+    name: halo_sql_list_reports
+    path: functions/halo_sql_studio.py
+    function_name: list_reports
+    category: Halo SQL Studio
+    access_level: role_based
+    role_names: *sql_roles
+  3e8cf647-88f0-4164-baa6-cd369fb9cfe7:
+    id: 3e8cf647-88f0-4164-baa6-cd369fb9cfe7
+    name: halo_sql_save_report
+    path: functions/halo_sql_studio.py
+    function_name: save_report
+    category: Halo SQL Studio
+    access_level: role_based
+    role_names: *sql_roles

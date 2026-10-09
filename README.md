@@ -1,110 +1,96 @@
 # Halo SQL Studio
 
-## 🚀 Overview
+Halo SQL Studio is a Bifrost Solution for exploring HaloPSA reporting tables,
+executing SQL through Halo's reporting API, and creating or updating Halo
+reports. It replaces the legacy standalone browser app: Bifrost owns
+authentication, the Halo connection, and Solution deployment.
 
-Halo SQL Studio is a client-side SQL editor that connects to Halo PSA via their reporting API. It gives you the familiar experience of tools like DataGrip and SSMS without needing direct database access.
+## Install from this repository
 
-## ✨ Features
+Log in to the Bifrost instance where the Solution should be installed, then
+install the repository-managed Solution:
 
--   🔐 **OAuth Authentication** - Connect directly to your Halo instance
--   🗄️ **Database Explorer** - Browse tables, columns, and existing reports
--   📝 **SQL Query Editor** - Write and execute queries with syntax highlighting
--   📊 **Results Grid** - View results in a clean, sortable table format
--   🔧 **Halo Variables** - Test queries with custom `$agentid`, `$siteid`, and `$clientid` values
--   🚫 **No Backend Required** - Everything runs in your browser
-
-## 🛠️ Setup
-
-### 1. Create Halo Application
-
-1. Go to **Config > Integrations > Halo API** in your Halo instance
-2. Note your **Resource Server** and **Authorization Server**
-3. Click **View Applications** → **New**
-4. Configure:
-    - **Name**: Halo SQL Studio
-    - **Auth Method**: Authorization Code (Native Application)
-    - **Redirect URI**: `https://halosqlstudio.gocovi.dev/auth/callback`
-    - **Permissions**: `read:reporting edit:reporting`
-    - **Grant Types**: Authorization Code
-    - **CORS Whitelist**: `https://halosqlstudio.gocovi.dev`
-
-### 2. Configure App
-
-1. Start Halo SQL Studio
-2. Click **Configure** and enter:
-    - **Tenant**: Your subdomain (e.g., `mymsp` for `mymsp.halopsa.com`)
-    - **Auth Server**: Your Authorization Server URL
-    - **Resource Server**: Your Resource Server URL
-    - **Client ID**: From your Halo application details
-
-### 3. Connect
-
-1. Click **Connect to Halo**
-2. Authorize in Halo
-3. Start exploring!
-
-## 🔧 Using Halo Variables
-
-Halo SQL Studio supports custom variable substitution for testing queries with different parameters:
-
-### Available Variables
-
--   **`$agentid`** - Override the agent ID for query execution
--   **`$siteid`** - Override the site ID for query execution
--   **`$clientid`** - Override the client ID for query execution
-
-### How to Use
-
-1. **Open Variables Dialog**: Click the Variables button next to the Execute button
-2. **Set Values**: Enter custom values for any of the three variables
-3. **Execute Queries**: Variables are automatically replaced in your SQL before execution
-4. **Fallback Behavior**: Leave variables empty to use the logged-in user's values
-
-### Example
-
-```sql
--- Your SQL query with variables
-SELECT * FROM AREA
-WHERE aarea = $clientid
+```bash
+bifrost solution install-repo https://github.com/jackmusick/HaloSqlStudio.git --ref main
 ```
 
-**With Variables Set:**
+Repository installation makes Git the Solution's writer. Updates run through
+the platform's managed Git lifecycle after repository changes; do not use a
+separate browser deployment or copy the legacy app's OAuth settings into the
+client.
 
--   `$clientid` = "11111"
+## Access and Halo connection
 
-**Result**: The query executes as if you were logged in as that specific agent/site/client combination.
+The app, its workflows, and its cache tables are restricted to the `Service
+Managers` role. Ensure that role exists and assign it to the people who should
+use SQL Studio before installation.
 
-### Benefits
+Configure the Solution's declared `HaloPSA` connection in Bifrost. Its mapping
+must contain the API resource `base_url`, such as
+`https://your-tenant.halopsa.com/api`, and the Halo OAuth client-credentials
+settings for that tenant. The portable manifest creates the client-credentials
+skeleton and required base URL field, but does not guess tenant-specific token
+endpoints or include credentials. OAuth tokens stay in Bifrost; the browser
+does not receive or store them.
 
--   **Test Different Scenarios**: Run the same SQL with various parameter combinations
--   **User Impersonation**: Test how queries behave for different user contexts
--   **Development Workflow**: Keep your SQL scripts while testing different parameters
--   **No Code Changes**: Variables are replaced transparently during execution
+`HaloPSA` is a shared Bifrost integration name. A Solution install reuses an
+existing connection without overwriting it, so an integration administrator
+must approve its use and grant the Halo client only the reporting permissions
+needed for this Solution. API calls run with those shared integration
+privileges. The caller's Bifrost email only resolves `$agentid` for SQL
+substitution; it does not create a per-user Halo authentication session.
 
-## 🏠 Self-Hosting
+After the connection is configured, run the first cache refresh:
 
-Want to host Halo SQL Studio yourself? It's easy!
+```bash
+bifrost workflows execute functions/halo_sql_studio.py::refresh_cache \
+  --params '{"cache_type":"all","reason":"initial"}'
+```
 
-### Quick Deploy
+The locator resolves against workflows visible to the caller. If the same
+Solution is installed in multiple scopes, use `bifrost workflows list`, select
+the matching workflow UUID, and execute that UUID with `--org <target-org>` as
+needed.
 
-1. **Fork this repository** on GitHub
-2. **Deploy to your preferred platform:**
-    - **Vercel**: Connect your fork and deploy with one click
-    - **Netlify**: Connect your fork and deploy automatically
-    - **GitHub Pages**: Enable in your fork's settings
-    - **Any static host**: Build with `npm run build` and upload the `dist` folder
+The Solution then refreshes the same caches daily at 3:23 AM America/New_York.
+Reports and query results remain live and are not cached.
 
-### Configuration
+## Architecture
 
-When self-hosting, update your Halo application's **Redirect URI** and **CORS Whitelist** to match your domain:
+- `apps/halo-sql-studio`: Bifrost React app with Monaco and AG Grid.
+- `functions/halo_sql_studio.py`: portable query, report, and cache workflows.
+- `modules/halopsa`: vendored HaloPSA client plus the reporting extension.
+- `halo_sql_agents`: caller-to-Halo-agent cache.
+- `halo_sql_schema_cache`: table and column cache for the explorer and completion.
+- `halo_sql_cache_state`: refresh metadata and the non-secret Halo base URL.
 
--   Redirect URI: `https://yourdomain.com/auth/callback`
--   CORS Whitelist: `https://yourdomain.com`
+## Local development
 
-## 🔒 Security
+Run local development from the Solution root with a CLI that matches the
+selected Bifrost instance:
 
-All API calls happen directly from your browser. No data passes through external servers.
+```bash
+bifrost solution start halo-sql-studio
+```
 
-## 📄 License
+`solution start` installs the selected instance's Bifrost web SDK transiently.
+Deployed builds receive that SDK from the serving platform, so the app's
+`package.json` deliberately does not pin an instance URL. If multiple installs
+share this slug, pass the intended install explicitly with
+`--solution <install-id>`.
 
-MIT License - Open source and free to use.
+## Verification
+
+```bash
+python3 -m pytest -q
+cd apps/halo-sql-studio
+npm run build
+```
+
+## Release verification
+
+This repository publishes the Solution source. Existing installations are not
+redeployed by this source replacement alone. The inherited frontend dependency
+graph has known audit findings; [dependency maintenance](https://github.com/jackmusick/HaloSqlStudio/issues/3)
+and a credentialed non-production installation/browser acceptance pass remain
+required before claiming production release readiness.
