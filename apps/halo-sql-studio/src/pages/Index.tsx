@@ -50,12 +50,15 @@ export default function Index() {
     return (
         <div className="flex h-full min-h-0 flex-col bg-background text-foreground">
             <BifrostHeader title="Halo SQL Studio" />
-            <div className="flex min-h-0 flex-1">
-                <aside className="relative flex-shrink-0" style={{ width: explorerWidth }}>
+            <div className="halo-sql-workspace flex min-h-0 flex-1">
+                <aside
+                    className="halo-sql-explorer relative flex-shrink-0"
+                    style={{ width: explorerWidth }}
+                >
                     <Explorer />
                 </aside>
                 <div
-                    className="relative flex w-px flex-shrink-0 cursor-col-resize items-center justify-center bg-border"
+                    className="halo-sql-resize-handle relative flex w-px flex-shrink-0 cursor-col-resize items-center justify-center bg-border"
                     onMouseDown={handleMouseDown}
                     title="Drag to resize Explorer"
                 >

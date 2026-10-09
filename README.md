@@ -90,7 +90,7 @@ npm run build
 ## Release verification
 
 This repository publishes the Solution source. Existing installations are not
-redeployed by this source replacement alone. The inherited frontend dependency
-graph has known audit findings; [dependency maintenance](https://github.com/jackmusick/HaloSqlStudio/issues/3)
-and a credentialed non-production installation/browser acceptance pass remain
-required before claiming production release readiness.
+redeployed by this source replacement alone. `npm audit --json` reports zero
+advisories for the committed frontend lockfile. A credentialed non-production
+installation and browser acceptance pass remain required before claiming live
+Halo execution or production release readiness.

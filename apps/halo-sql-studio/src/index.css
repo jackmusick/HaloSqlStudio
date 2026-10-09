@@ -164,3 +164,18 @@
         color: hsl(var(--foreground));
     }
 }
+
+@media (max-width: 640px) {
+    .halo-sql-workspace {
+        flex-direction: column;
+    }
+
+    .halo-sql-explorer {
+        width: 100% !important;
+        height: 36%;
+    }
+
+    .halo-sql-resize-handle {
+        display: none;
+    }
+}
