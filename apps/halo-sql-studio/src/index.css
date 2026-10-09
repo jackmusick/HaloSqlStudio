@@ -1,6 +1,5 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+@config "../tailwind.config.ts";
 
 /* Database IDE tokens follow the host-managed .dark class. */
 
@@ -163,5 +162,20 @@
     /* Focus state for date inputs */
     input[type="date"]:focus::-webkit-datetime-edit {
         color: hsl(var(--foreground));
+    }
+}
+
+@media (max-width: 640px) {
+    .halo-sql-workspace {
+        flex-direction: column;
+    }
+
+    .halo-sql-explorer {
+        width: 100% !important;
+        height: 36%;
+    }
+
+    .halo-sql-resize-handle {
+        display: none;
     }
 }

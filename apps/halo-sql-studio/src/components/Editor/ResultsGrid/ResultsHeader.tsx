@@ -22,11 +22,11 @@ export function ResultsHeader({
     };
 
     return (
-        <div className="flex items-center justify-between p-2 border-b border-border bg-card">
+        <div className="flex flex-wrap items-center gap-2 p-2 border-b border-border bg-card">
             {/* Left side: Search Box */}
-            <div className="flex items-center gap-4">
+            <div className="flex w-full min-w-0 items-center gap-4 sm:w-auto sm:flex-1">
                 {/* Global Search */}
-                <div className="flex items-center space-x-2">
+                <div className="flex min-w-0 flex-1 items-center space-x-2">
                     <svg
                         className="w-4 h-4 text-muted-foreground"
                         fill="none"
@@ -45,7 +45,7 @@ export function ResultsHeader({
                         placeholder="Search rows..."
                         value={globalFilter}
                         onChange={(e) => onGlobalFilterChange(e.target.value)}
-                        className="w-64 px-3 py-2 bg-background border border-border rounded-md text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary text-sm"
+                        className="min-w-0 flex-1 px-3 py-2 bg-background border border-border rounded-md text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary text-sm sm:max-w-xs"
                     />
                     {globalFilter && (
                         <button
@@ -59,7 +59,7 @@ export function ResultsHeader({
             </div>
 
             {/* Right side: Export buttons */}
-            <div className="flex items-center gap-2">
+            <div className="ml-auto flex items-center gap-2">
                 <Button
                     variant="outline"
                     size="sm"
